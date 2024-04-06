@@ -9,6 +9,7 @@ import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -221,13 +222,13 @@ public class SSTable {
     }
 
     public static String readKey(String key) throws IOException {
-        File dir = new File(SSTABLE_DIRECTORY);
-        File[] files = dir.listFiles((d, name) -> name.startsWith("sstable") && name.endsWith(".txt"));
-
         String value = avlTree.findValue(key);
         if(value != null) {
             return value;
         }
+
+        File dir = new File(SSTABLE_DIRECTORY);
+        File[] files = dir.listFiles((d, name) -> name.startsWith("sstable") && name.endsWith(".txt"));
 
         if(files == null) {
             return null;
@@ -261,7 +262,15 @@ public class SSTable {
                 long startOffset = sIndex.get(segmentStartKey);
                 long endOffset = sIndex.highEntry(segmentStartKey, raf).getValue();
 
-                result = binarySeachSSTable(sstableFilename, startOffset, endOffset, key);
+                long byteOffset = binarySeachSSTable(sstableFilename, startOffset, endOffset, key);
+
+                if(byteOffset != -1) {
+                    raf.seek(byteOffset);
+                    seekToBeginningOfLine(raf);
+                    String line = raf.readLine();
+                    result = line.split(": ")[1];
+                    return result;
+                }
 
                 if(result != null) {
                     break;
@@ -269,6 +278,113 @@ public class SSTable {
             }
         }
         return result;
+    }
+
+    public static List<String> readRange(String start, String end) throws IOException {
+        File dir = new File(SSTABLE_DIRECTORY);
+        File[] files = dir.listFiles((d, name) -> name.startsWith("sstable") && name.endsWith(".txt"));
+
+        if(files == null) {
+            return null;
+        }
+
+        Arrays.sort(files, (file1, file2) -> {
+            int number1 = Integer.parseInt(file1.getName().substring(7, file1.getName().length() - 4));
+            int number2 = Integer.parseInt(file2.getName().substring(7, file2.getName().length() - 4));
+            return Integer.compare(number2, number1);
+        });
+
+        List<String> result = new ArrayList<>();
+        for(File file : files) {
+            String sstableFilename = file.getName();
+            SSTable sstable = fileNameAndSSTableMap.get(sstableFilename);
+
+            if(sstable.bloomFilter.mightContains(start) == false && sstable.bloomFilter.mightContains(end) == false) {
+                continue;
+            } else if(sstable.bloomFilter.mightContains(start) == true && sstable.bloomFilter.mightContains(start) == true) {
+                if(start.compareTo(end) < 0) {
+                    SparseIndex sIndex = sstable.getSparseIndex();
+                    String segmentStartKey = sIndex.findSegment(start);
+                    if(segmentStartKey != null) {
+                        Path filePath = Paths.get(SSTABLE_DIRECTORY, sstable.getFileName());
+                        RandomAccessFile raf = null;
+                        try {
+                            raf = new RandomAccessFile(filePath.toFile(), "r");
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                        long startOffset = sIndex.get(segmentStartKey);
+                        long endOffset = sIndex.highEntry(segmentStartKey, raf).getValue();
+
+                        long byteOffset = binarySeachSSTable(sstableFilename, startOffset, endOffset, start);
+
+                        if(byteOffset != -1) {
+                            raf.seek(byteOffset);
+                            seekToBeginningOfLine(raf);
+                            String line = raf.readLine();
+                            String currValue = line.split(": ")[1];
+                            result.add(currValue);
+                        }
+                        
+                        String line;
+                        while((line = raf.readLine()) != null) {
+                            String currKey = line.split(": ")[0];
+                            if(currKey.compareTo(end) <= 0) {
+                                String currValue = line.split(": ")[1];
+                                result.add(currValue);
+                            } else {
+                                break;
+                            }
+                        }
+                        raf.close();
+                        return result;
+                    }
+                } else { // start.compareTo(end) > 0
+                    SparseIndex sIndex = sstable.getSparseIndex();
+                    String segmentStartKey = sIndex.findSegment(start);
+                    if(segmentStartKey != null) {
+                        Path filePath = Paths.get(SSTABLE_DIRECTORY, sstable.getFileName());
+                        RandomAccessFile raf = null;
+                        try {
+                            raf = new RandomAccessFile(filePath.toFile(), "r");
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                        long startOffset = sIndex.get(segmentStartKey);
+                        long endOffset = sIndex.highEntry(segmentStartKey, raf).getValue();
+
+                        long byteOffset = binarySeachSSTable(sstableFilename, startOffset, endOffset, end);
+
+                        if(byteOffset != -1) {
+                            raf.seek(byteOffset);
+                            seekToBeginningOfLine(raf);
+                            String line = raf.readLine();
+                            String currValue = line.split(": ")[1];
+                            result.add(currValue);
+                        }
+                        
+                        String line;
+                        while((line = raf.readLine()) != null) {
+                            String currKey = line.split(": ")[0];
+                            if(currKey.compareTo(start) <= 0) {
+                                String currValue = line.split(": ")[1];
+                                result.add(currValue);
+                            } else {
+                                break;
+                            }
+                        }
+                        raf.close();
+                        return result;
+                    }
+                }
+            } else if(sstable.bloomFilter.mightContains(start) == false && sstable.bloomFilter.mightContains(end) == true) {
+                
+            } else { // start = true and end = false
+
+            }
+        }
+
+        return null;
     }
 
     public static void updateFileNameAndSSTableMap(String oldFileName1, String oldFileName2, String newFileName, SSTable newSSTable) {
@@ -316,7 +432,7 @@ public class SSTable {
         writeAheadLog.close();
     }
 
-    private static String binarySeachSSTable(String sstableFileName, long startOffset, long endOffset, String key) throws IOException {
+    private static long binarySeachSSTable(String sstableFileName, long startOffset, long endOffset, String key) throws IOException {
         Path filePath = Paths.get(SSTABLE_DIRECTORY, sstableFileName);
 
         long low = startOffset;
@@ -335,38 +451,40 @@ public class SSTable {
             } catch (Exception e) {
                 e.printStackTrace();
             }
-            seekToBeginningOfLine(raf);
+            mid = seekToBeginningOfLine(raf);
 
             String line = raf.readLine();
-            String[] pair = line.split(": ");
-            String currKey = pair[0].trim();
-            String currValue = pair[1].trim();
+            String currKey = line.split(": ")[0];
 
             if(currKey.equals(key)) {
                 raf.close();
-                return currValue;
+                return mid;
             } else if(currKey.compareTo(key) < 0) {
-                low = mid + 1;
+                low = raf.getFilePointer();
             } else {
                 high = mid - 1;
+                if (high > 0) {
+                    raf.seek(high);
+                    high = seekToBeginningOfLine(raf);
+                }
             }
         }
 
         raf.close();
-        return null;
+        return -1;
     }
 
-    private static void seekToBeginningOfLine(RandomAccessFile raf) throws IOException {
+    private static long seekToBeginningOfLine(RandomAccessFile raf) throws IOException {
         long currentPosition = raf.getFilePointer();
         while (currentPosition > 0) {
-            raf.seek(currentPosition - 1); // Move one byte backward
-            if (raf.readByte() == '\n') {  // Check if it's the beginning of the line
-                return; // Found the beginning of the line
+            raf.seek(currentPosition - 1);
+            if (raf.readByte() == '\n') {
+                return currentPosition;
             }
-            currentPosition--; // Move to the previous position
+            currentPosition--;
         }
-        // If the loop exits without finding '\n', we're at the beginning of the file
         raf.seek(0);
+        return 0;
     }
 
     private static int getSSTableCountPlusOne() {

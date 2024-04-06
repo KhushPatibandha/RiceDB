@@ -1,7 +1,7 @@
 import requests
 import json
 
-base_url = 'http://localhost:8080/api'  # replace with your server's address
+base_url = 'http://localhost:8080/api'
 
 # Mass insert
 for i in range(1, 10001):

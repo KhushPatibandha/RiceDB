@@ -1,6 +1,7 @@
 package com.khush.lsmtreestorage.Controllers;
 
 import java.io.IOException;
+import java.util.List;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -43,6 +44,16 @@ public class Controller {
     public ResponseEntity<String> read(@RequestParam String key) throws IOException {
         String value = SSTable.readKey(key);
         return new ResponseEntity<>("Value Read: "+ value, HttpStatus.OK);
+    }
+
+    @GetMapping("/get/range")
+    public ResponseEntity<List<String>> rangeSearch(@RequestParam String start, @RequestParam String end) throws IOException {
+        if(start.equals(end)) {
+            read(start);
+            return new ResponseEntity<>(HttpStatus.OK);
+        }
+        List<String> values = SSTable.readRange(start, end);
+        return new ResponseEntity<>(values, HttpStatus.OK);
     }
 
     @PutMapping("/recover")
